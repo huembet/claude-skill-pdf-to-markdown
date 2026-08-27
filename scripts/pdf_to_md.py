@@ -13,6 +13,7 @@ Features:
 Usage:
     python pdf_to_md.py <input.pdf> [output.md]
     python pdf_to_md.py <input.pdf> --docling      # Accurate tables (slower)
+    python pdf_to_md.py <input.pdf> --ocr          # OCR scanned pages (either mode)
     python pdf_to_md.py <input.pdf> --clear-cache  # Re-extract
     python pdf_to_md.py --clear-all-cache          # Clear entire cache
 
@@ -46,6 +47,7 @@ class ExtractionConfig:
     pdf_path: str
     docling: bool = False
     images_scale: float = 4.0
+    ocr: bool = False
 
 
 @dataclass
@@ -93,9 +95,14 @@ class CacheManager:
                 f.seek(-chunk_size, 2)
                 hasher.update(f.read(chunk_size))
 
-        mode = f"docling_{config.images_scale}" if config.docling else "fast"
-        raw = f"{file_size}|{hasher.hexdigest()}|{mode}"
+        raw = f"{file_size}|{hasher.hexdigest()}|{self._mode(config)}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+    @staticmethod
+    def _mode(config: ExtractionConfig) -> str:
+        """Mode string for cache keys and metadata; OCR changes the output."""
+        base = f"docling_{config.images_scale}" if config.docling else "fast"
+        return f"{base}_ocr" if config.ocr else base
 
     def _get_dir(self, cache_key: str) -> Path:
         """Get cache directory for a given cache key."""
@@ -217,7 +224,6 @@ class CacheManager:
 
         p = Path(config.pdf_path).resolve()
         stat = p.stat()
-        mode = f"docling_{config.images_scale}" if config.docling else "fast"
 
         metadata = {
             "source_path": str(p),
@@ -227,7 +233,7 @@ class CacheManager:
             "cached_at": datetime.now().isoformat(),
             "total_pages": result.total_pages,
             "extractor_version": EXTRACTOR_VERSION,
-            "mode": mode,
+            "mode": self._mode(config),
             "images_scale": config.images_scale if config.docling else None,
         }
 
@@ -275,13 +281,18 @@ class CacheManager:
                 os.unlink(temp_json)
 
     def clear(self, pdf_path: str = None) -> bool:
-        """Clear cache for specific PDF (both fast and docling modes) or entire cache."""
+        """Clear cache for a specific PDF (all modes) or the entire cache."""
         if pdf_path:
-            # Clear BOTH fast and docling caches for this PDF
+            # Clear every mode's cache for this PDF (fast, fast+ocr, docling)
             cleared = False
-            for docling_mode in [False, True]:
+            variants = [
+                ExtractionConfig(pdf_path=pdf_path, docling=False, ocr=False),
+                ExtractionConfig(pdf_path=pdf_path, docling=False, ocr=True),
+                ExtractionConfig(pdf_path=pdf_path, docling=True, ocr=False),
+                ExtractionConfig(pdf_path=pdf_path, docling=True, ocr=True),
+            ]
+            for config in variants:
                 try:
-                    config = ExtractionConfig(pdf_path=pdf_path, docling=docling_mode)
                     cache_key = self.get_key(config)
                     cache_dir = self._get_dir(cache_key)
                     if cache_dir.exists():
@@ -554,7 +565,9 @@ def check_dependencies(docling_mode: bool = False):
     return True
 
 
-def convert_pdf(pdf_path, image_dir, show_progress=False, docling=False, images_scale=4.0):
+def convert_pdf(
+    pdf_path, image_dir, show_progress=False, docling=False, images_scale=4.0, use_ocr=False
+):
     """Convert PDF to markdown."""
     if docling:
         from extractor import extract_pdf_docling
@@ -564,6 +577,7 @@ def convert_pdf(pdf_path, image_dir, show_progress=False, docling=False, images_
             output_dir=image_dir,
             images_scale=images_scale,
             show_progress=show_progress,
+            use_ocr=use_ocr,
         )
         return markdown
     else:
@@ -573,6 +587,7 @@ def convert_pdf(pdf_path, image_dir, show_progress=False, docling=False, images_
             pdf_path,
             image_dir=image_dir,
             show_progress=show_progress,
+            use_ocr=use_ocr,
         )
         return markdown
 
@@ -614,6 +629,7 @@ Examples:
   python pdf_to_md.py document.pdf                    # Output to document.md (cached)
   python pdf_to_md.py document.pdf output.md         # Custom output path
   python pdf_to_md.py document.pdf --docling         # Accurate tables (slower)
+  python pdf_to_md.py document.pdf --ocr             # OCR pages with no text layer
   python pdf_to_md.py document.pdf --clear-cache     # Clear cache and re-extract
   python pdf_to_md.py --clear-all-cache              # Clear entire cache
 
@@ -632,6 +648,11 @@ Caching:
         action="store_true",
         dest="docling",
         help="Use Docling AI for complex/borderless tables (slower, ~1 sec/page)",
+    )
+    parser.add_argument(
+        "--ocr",
+        action="store_true",
+        help="Run OCR for pages with little extractable text (both modes, much slower)",
     )
     parser.add_argument("--no-progress", action="store_true", help="Disable progress indicator")
 
@@ -689,7 +710,7 @@ Caching:
     show_progress = sys.stderr.isatty() and not args.no_progress
 
     # Check cache
-    config = ExtractionConfig(pdf_path=args.input, docling=args.docling)
+    config = ExtractionConfig(pdf_path=args.input, docling=args.docling, ocr=args.ocr)
     valid, cache_key = cache_mgr.is_valid(config)
 
     result = None
@@ -720,7 +741,7 @@ Caching:
         if not check_dependencies(docling_mode=args.docling):
             sys.exit(1)
 
-        from extractor import get_page_count
+        from extractor import check_docling_models, get_page_count
 
         total_pages = get_page_count(args.input)
 
@@ -748,10 +769,22 @@ Caching:
                 image_dir=temp_image_dir,
                 show_progress=show_progress,
                 docling=args.docling,
+                use_ocr=args.ocr,
             )
         except Exception as e:
             img_mgr.cleanup()
             print(f"ERROR: Conversion failed: {e}", file=sys.stderr)
+            # Docling fetches its models from Hugging Face on first use. In a
+            # sandbox or behind a restrictive proxy that fetch fails with a
+            # network error, which on its own reads like a broken PDF.
+            if args.docling and not check_docling_models():
+                print(
+                    "HINT: Docling's AI models are not in the local cache and could "
+                    "not be downloaded. Check that huggingface.co is reachable, or "
+                    "pre-populate the cache on a connected machine and copy "
+                    "~/.cache/huggingface across. Fast mode needs no downloads.",
+                    file=sys.stderr,
+                )
             sys.exit(1)
 
         # Save to cache

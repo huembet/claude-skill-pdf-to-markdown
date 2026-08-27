@@ -1,0 +1,8 @@
+# Fast mode (default). Pinned deliberately: pymupdf4llm 1.27.2.1 started
+# shipping pymupdf-layout, which silently switches to_markdown() to a second
+# implementation with different parameters and different page metadata.
+# Re-run the checks in SKILL.md ("After a version bump") before raising these.
+# This set passes scripts/verify.py on Linux/Python 3.11 and macOS/Python 3.13.
+pymupdf==1.28.2
+pymupdf4llm==1.28.2
+pymupdf-layout==1.28.2

@@ -4,7 +4,9 @@ PDF extraction with multiple backends:
 - Accurate mode: IBM Docling with TableFormer AI (better for complex/borderless tables)
 """
 
+import inspect
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -20,7 +22,15 @@ os.environ.setdefault("PYMUPDF_SUGGEST_LAYOUT_ANALYZER", "0")
 #        Cache keys now include no_images flag to avoid contamination
 # 3.3.0: Image paths in cached markdown now use relative 'images/' prefix
 #        (fixes broken temp directory references in cached output)
-EXTRACTOR_VERSION = "3.3.0"
+# 4.0.0: Pages are now marked with <!-- Page N --> in both modes.
+#        The old <!-- PAGE_BREAK --> substitution was dead code: it looked for
+#        "\n-----\n", which pymupdf4llm never emits (page_separators defaults
+#        to False, and when enabled the text is "--- end of page=N ---").
+#        Fast mode no longer passes table_strategy and no longer runs OCR
+#        unless asked; see extract_pdf_fast() for why.
+# 4.1.0: Docling mode no longer runs OCR unless asked either, so --ocr now
+#        means the same thing in both modes.
+EXTRACTOR_VERSION = "4.1.0"
 
 
 def check_docling_models():
@@ -36,42 +46,113 @@ def check_docling_models():
         return False
 
 
+PAGE_MARKER = "<!-- Page {} -->"
+
+
+def _page_number(chunk: dict, fallback: int) -> int:
+    """
+    Read the 1-based page number from a pymupdf4llm page chunk.
+
+    The two to_markdown implementations disagree on the key: the layout path
+    stores it under metadata["page_number"], the legacy path under
+    metadata["page"]. Fall back to the chunk's position if neither is present.
+    """
+    metadata = chunk.get("metadata") or {}
+    for key in ("page_number", "page"):
+        value = metadata.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return fallback
+
+
+def _join_page_chunks(chunks: list) -> str:
+    """Join pymupdf4llm page chunks into markdown with <!-- Page N --> markers."""
+    parts = []
+    for position, chunk in enumerate(chunks, start=1):
+        text = (chunk.get("text") or "").strip()
+        marker = PAGE_MARKER.format(_page_number(chunk, position))
+        parts.append(f"{marker}\n\n{text}")
+    return "\n\n".join(parts) + "\n"
+
+
+def _looks_untextual(markdown: str, page_count: int) -> bool:
+    """
+    True if the markdown carries almost no text beyond its page markers.
+
+    Used to warn about scanned PDFs, which yield empty pages unless OCR runs.
+    """
+    if page_count <= 0:
+        return False
+    body = re.sub(r"<!-- Page \d+ -->", "", markdown)
+    body = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", body)
+    return len(body.strip()) < 20 * page_count
+
+
 def extract_pdf_fast(
-    pdf_path: str, image_dir: str = None, show_progress: bool = False
+    pdf_path: str,
+    image_dir: str = None,
+    show_progress: bool = False,
+    use_ocr: bool = False,
 ) -> str:
     """
-    Fast PDF extraction using PyMuPDF with text-based table detection.
+    Fast PDF extraction using PyMuPDF, one <!-- Page N --> marker per page.
 
-    Uses 'text' table strategy which handles borderless/whitespace-based
-    tables better than the default 'lines_strict' for mixed document types.
+    Two upstream details drive the arguments below. Since pymupdf4llm 1.27.2.1
+    the package pulls in pymupdf-layout and routes to_markdown() through a
+    second implementation (helpers/document_layout.py), chosen at import time
+    by whether pymupdf.layout is importable. That layout path:
+
+      * does not accept table_strategy - it lands in **kwargs and is dropped,
+        so passing it only creates the illusion of control. On the legacy path
+        table_strategy="text" actively hurts: on a two-column journal article
+        it shredded the cover page into 673 pseudo-table rows.
+      * runs OCR by default, which cost ~5x the runtime on a born-digital test
+        document while extracting one image fewer. Hence use_ocr=False here,
+        with a warning when the result looks like it needed OCR after all.
 
     Args:
         pdf_path: Path to the PDF file
         image_dir: Directory to save extracted images (None = skip images)
         show_progress: Whether to show progress output
+        use_ocr: Run OCR on pages with little extractable text (much slower)
 
     Returns:
-        Markdown string of the PDF content with image references if image_dir provided
+        Markdown string of the PDF content, pages separated by page markers,
+        with image references if image_dir was provided.
     """
     import pymupdf4llm
 
     if show_progress:
         print("Extracting with PyMuPDF (fast mode)...", file=sys.stderr)
 
-    # Use text strategy which handles borderless tables better
-    # than the default lines_strict
-    markdown = pymupdf4llm.to_markdown(
+    # page_chunks=True is the only dependable way to get page boundaries.
+    # page_separators defaults to False in both implementations, so no
+    # separator is emitted at all, and enabling it yields different text per
+    # path ("--- end of page=N ---" vs "--- end of {page.page_number=} ---").
+    chunks = pymupdf4llm.to_markdown(
         pdf_path,
         show_progress=show_progress,
-        table_strategy="text",  # Better for mixed table types
         write_images=image_dir is not None,
-        image_path=image_dir,
+        # Upstream calls .strip() on this (helpers/utils.py, md_path), so it
+        # must be a str - a Path raises AttributeError.
+        image_path=str(image_dir) if image_dir is not None else "",
+        # Only honoured by the legacy path, where it keeps images from being
+        # written next to the source PDF (pymupdf4llm issue #352). The layout
+        # path overrides it with the document's own name.
+        filename=Path(pdf_path).stem,
+        page_chunks=True,
+        # Ignored by the legacy path, which has no OCR stage.
+        use_ocr=use_ocr,
     )
 
-    # Replace pymupdf4llm's default page separator with explicit sentinel.
-    # This prevents false splits when documents contain literal "-----"
-    # (horizontal rules, ASCII tables, etc.)
-    markdown = markdown.replace("\n-----\n", "\n<!-- PAGE_BREAK -->\n")
+    markdown = _join_page_chunks(chunks)
+
+    if not use_ocr and _looks_untextual(markdown, len(chunks)):
+        print(
+            "WARNING: Barely any text extracted - this may be a scanned PDF. "
+            "Retry with --ocr.",
+            file=sys.stderr,
+        )
 
     return markdown
 
@@ -90,11 +171,17 @@ def _save_docling_images(result, output_dir: Path) -> list:
     Returns:
         List of saved image paths (in iteration order)
     """
+    from docling_core.types.doc.document import PictureItem
+
     output_dir.mkdir(parents=True, exist_ok=True)
     image_paths = []
 
+    # Restricted to PictureItem on purpose: those are exactly the elements that
+    # export_to_markdown renders as an <!-- image --> placeholder. Accepting any
+    # element with an .image attribute would let a table with a rendered image
+    # slip in and shift every later placeholder onto the wrong picture.
     for i, (element, _level) in enumerate(result.document.iterate_items()):
-        if hasattr(element, "image") and element.image is not None:
+        if isinstance(element, PictureItem) and element.image is not None:
             img_path = output_dir / f"figure_{i:04d}.png"
             element.image.pil_image.save(str(img_path))
             image_paths.append(str(img_path))
@@ -102,11 +189,96 @@ def _save_docling_images(result, output_dir: Path) -> list:
     return image_paths
 
 
+# Sentinel handed to docling's export_to_markdown; replaced by numbered markers.
+_DOCLING_PAGE_BREAK = "<!-- DOCLING_PAGE_BREAK -->"
+
+
+def _mark_pages(segments: list) -> str:
+    """Prefix each page segment with its <!-- Page N --> marker."""
+    return (
+        "\n\n".join(
+            f"{PAGE_MARKER.format(number)}\n\n{segment.strip()}"
+            for number, segment in enumerate(segments, start=1)
+        )
+        + "\n"
+    )
+
+
+def _docling_export_support(document) -> set:
+    """
+    Which page-aware export parameters the installed docling-core offers.
+
+    page_break_placeholder arrived in docling-core 2.24.0 and page_no in 2.26.0,
+    and docling does not pin docling-core tightly - an older core can sit under a
+    current docling, where either argument raises TypeError. Inspecting the
+    signature keeps a genuine export failure from being read as a missing
+    feature, which a bare `except TypeError` around the call would do.
+    """
+    try:
+        parameters = inspect.signature(document.export_to_markdown).parameters
+    except (TypeError, ValueError):
+        return set()
+    return {
+        name for name in ("page_break_placeholder", "page_no") if name in parameters
+    }
+
+
+def _docling_to_markdown(document, image_mode) -> str:
+    """
+    Export a DoclingDocument to markdown carrying <!-- Page N --> markers.
+
+    Preferred route is a single whole-document export with a page-break
+    placeholder. Docling's per-page export is documented to duplicate tables in
+    larger documents, so it only serves as a fallback - either when the
+    placeholder route yields a segment count that disagrees with the page count,
+    or when the installed docling-core is too old to offer the placeholder.
+    """
+    supported = _docling_export_support(document)
+    total_pages = document.num_pages()
+
+    if "page_break_placeholder" in supported:
+        markdown = document.export_to_markdown(
+            image_mode=image_mode,
+            page_break_placeholder=_DOCLING_PAGE_BREAK,
+        )
+        segments = markdown.split(_DOCLING_PAGE_BREAK)
+
+        if not total_pages or len(segments) == total_pages:
+            return _mark_pages(segments)
+
+        # Numbering these 1..n would put wrong page numbers on real content -
+        # an empty page yields one break too few - so ask page by page instead.
+        print(
+            f"WARNING: {len(segments)} page-break segments for {total_pages} pages; "
+            "falling back to per-page export.",
+            file=sys.stderr,
+        )
+
+    if "page_no" in supported and total_pages:
+        return _mark_pages(
+            [
+                document.export_to_markdown(page_no=number, image_mode=image_mode)
+                for number in range(1, total_pages + 1)
+            ]
+        )
+
+    # Wrong page numbers would be worse than none, so degrade to an unmarked
+    # export and say exactly what would fix it.
+    print(
+        "WARNING: this docling-core exposes neither page_break_placeholder nor "
+        "page_no, so the output carries no page markers. Upgrade with "
+        "'uv pip install -U docling-core' (needs >= 2.26.0).",
+        file=sys.stderr,
+    )
+    return document.export_to_markdown(image_mode=image_mode)
+
+
 def extract_pdf_docling(
     pdf_path: str,
     output_dir: str = None,
     images_scale: float = 4.0,
     show_progress: bool = False,
+    use_ocr: bool = False,
 ) -> tuple:
     """
     Extract PDF using Docling with accurate tables + high-res images.
@@ -119,9 +291,18 @@ def extract_pdf_docling(
         output_dir: Directory to save extracted images (None = skip images)
         images_scale: Image resolution multiplier (default: 4.0 for high-res)
         show_progress: Whether to show progress output
+        use_ocr: Run docling's OCR stage (off by default, see below)
 
     Returns:
         tuple: (markdown: str, image_paths: list[str])
+
+    Note on use_ocr: docling defaults do_ocr to True and picks an engine
+    automatically, which on a standard install is RapidOCR on onnxruntime.
+    That puts onnxruntime and the PyTorch layout model in one process, and on
+    macOS the two OpenMP runtimes they each carry can collide hard enough to
+    segfault the interpreter. Leaving OCR off avoids loading onnxruntime at
+    all, costs nothing on PDFs that already have a text layer, and matches
+    fast mode, where OCR is opt-in for speed.
     """
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.base_models import InputFormat
@@ -144,6 +325,7 @@ def extract_pdf_docling(
     # Configure pipeline for accurate tables + image extraction
     pipeline_options = PdfPipelineOptions(
         do_table_structure=True,
+        do_ocr=use_ocr,
         generate_picture_images=output_dir is not None,
         images_scale=images_scale,
     )
@@ -182,8 +364,8 @@ def extract_pdf_docling(
                 file=sys.stderr,
             )
 
-    # Export markdown with placeholders
-    md = result.document.export_to_markdown(image_mode=ImageRefMode.PLACEHOLDER)
+    # Export markdown with placeholders, one <!-- Page N --> marker per page
+    md = _docling_to_markdown(result.document, ImageRefMode.PLACEHOLDER)
 
     # Replace placeholders with actual image references (order must match iteration order)
     for img_path in image_paths:
@@ -214,7 +396,7 @@ def extract_pdf_to_markdown(
         )
         return md
     else:
-        return extract_pdf_fast(pdf_path, show_progress)
+        return extract_pdf_fast(pdf_path, show_progress=show_progress)
 
 
 def get_page_count(pdf_path: str) -> int:
