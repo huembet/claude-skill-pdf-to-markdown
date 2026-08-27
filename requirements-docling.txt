@@ -1,0 +1,4 @@
+# High-accuracy mode (--docling). Install in addition to requirements.txt.
+# First use downloads ~500MB of models from Hugging Face.
+docling==2.123.0
+docling-core==2.92.0

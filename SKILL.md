@@ -28,16 +28,29 @@ Extract complete PDF content as structured Markdown, preserving:
 This skill uses a dedicated virtual environment at `~/.claude/skills/pdf-to-markdown/.venv/` to avoid polluting the user's working directory.
 
 ### First-Time Setup (if .venv doesn't exist)
+
+Versions are pinned in `requirements.txt`. Install from the file rather than by
+package name — see "Why the versions are pinned" below.
+
 ```bash
 # For fast mode only (PyMuPDF):
-cd ~/.claude/skills/pdf-to-markdown && uv venv .venv && uv pip install --python .venv/bin/python pymupdf pymupdf4llm
+cd ~/.claude/skills/pdf-to-markdown && uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 
-# For --docling mode (high-accuracy tables):
-cd ~/.claude/skills/pdf-to-markdown && uv venv .venv && uv pip install --python .venv/bin/python pymupdf docling docling-core
-
-# Or install everything:
-cd ~/.claude/skills/pdf-to-markdown && uv venv .venv && uv pip install --python .venv/bin/python pymupdf pymupdf4llm docling docling-core
+# For --docling mode (high-accuracy tables), add:
+cd ~/.claude/skills/pdf-to-markdown && uv pip install --python .venv/bin/python -r requirements-docling.txt
 ```
+
+### Why the versions are pinned
+
+`pymupdf4llm` 1.27.2.1 began shipping `pymupdf-layout`. When that package is
+importable, `to_markdown()` routes through a **second implementation** with a
+different parameter set and different page metadata. The switch is silent:
+unsupported arguments land in `**kwargs` and are dropped without a warning.
+
+**After a version bump**, re-check on a known PDF:
+- output still carries one `<!-- Page N -->` per page, numbered without gaps
+- images still land in `images/` next to the `.md`, and every reference resolves
+- runtime has not jumped by several multiples (that signals OCR turned itself on)
 
 ### Verify Installation
 ```bash
@@ -63,7 +76,7 @@ When user provides a PDF and wants full content in context:
 
 ### Step 1: Ensure the skill venv exists
 ```bash
-test -d ~/.claude/skills/pdf-to-markdown/.venv || (cd ~/.claude/skills/pdf-to-markdown && uv venv .venv && uv pip install --python .venv/bin/python pymupdf pymupdf4llm)
+test -d ~/.claude/skills/pdf-to-markdown/.venv || (cd ~/.claude/skills/pdf-to-markdown && uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt)
 ```
 
 ### Step 2: Convert PDF to Markdown
@@ -148,8 +161,28 @@ images_dir: images
 ---
 ```
 
+### Page markers
+
+Every page begins with an HTML comment carrying its 1-based page number, in
+**both** fast and `--docling` mode:
+
+```markdown
+<!-- Page 7 -->
+
+...content of page 7...
+
+<!-- Page 8 -->
+```
+
+Markers are invisible when the markdown is rendered, so they cost nothing
+visually, but they let you cite a page ("see page 7") and let a reader locate a
+passage in the original PDF. Empty pages still get their marker, so the
+numbering never has gaps.
+
 ### Content with image references
 ```markdown
+<!-- Page 1 -->
+
 # Main Title
 
 ## Section Header
@@ -186,6 +219,7 @@ Usage: pdf_to_md.py <input.pdf> [output.md] [options]
 
 Options:
   --docling         Use Docling AI for high-accuracy tables (~1 sec/page)
+  --ocr             OCR pages with little extractable text (fast mode, slower)
   --no-progress     Disable progress indicator
 
 Cache Options:
@@ -222,15 +256,29 @@ For PDFs with complex tables that need high accuracy, use the `--docling` flag:
 Recreate the skill's virtual environment:
 ```bash
 # For fast mode:
-cd ~/.claude/skills/pdf-to-markdown && rm -rf .venv && uv venv .venv && uv pip install --python .venv/bin/python pymupdf pymupdf4llm
+cd ~/.claude/skills/pdf-to-markdown && rm -rf .venv && uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 
 # For docling mode:
-cd ~/.claude/skills/pdf-to-markdown && rm -rf .venv && uv venv .venv && uv pip install --python .venv/bin/python pymupdf docling docling-core
+cd ~/.claude/skills/pdf-to-markdown && rm -rf .venv && uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt -r requirements-docling.txt
 ```
+
+### Output is empty or nearly empty
+The PDF probably has no text layer (a scan). Fast mode does not OCR by default,
+because on born-digital PDFs OCR costs several times the runtime for no gain.
+Re-run with `--ocr`:
+```bash
+~/.claude/skills/pdf-to-markdown/.venv/bin/python ~/.claude/skills/pdf-to-markdown/scripts/pdf_to_md.py document.pdf --ocr
+```
+The script warns on stderr when output looks like it needed OCR.
+
+### `--docling` fails with a network error
+Docling downloads its models from Hugging Face on first use. Behind a proxy or
+in a sandbox that blocks `huggingface.co`, the run fails with `403 Forbidden`.
+Either allow that host, or populate `~/.cache/huggingface` on a connected
+machine and copy it across. Fast mode needs no downloads.
 
 ### Poor extraction quality
 - Try `--docling` for complex tables
-- For scanned PDFs, ensure Tesseract OCR is installed: `brew install tesseract`
 
 ### Tables not formatting correctly
 For complex tables, use `--docling` mode which uses IBM's TableFormer AI model.
