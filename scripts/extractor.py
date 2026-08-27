@@ -28,7 +28,9 @@ os.environ.setdefault("PYMUPDF_SUGGEST_LAYOUT_ANALYZER", "0")
 #        to False, and when enabled the text is "--- end of page=N ---").
 #        Fast mode no longer passes table_strategy and no longer runs OCR
 #        unless asked; see extract_pdf_fast() for why.
-EXTRACTOR_VERSION = "4.0.0"
+# 4.1.0: Docling mode no longer runs OCR unless asked either, so --ocr now
+#        means the same thing in both modes.
+EXTRACTOR_VERSION = "4.1.0"
 
 
 def check_docling_models():
@@ -276,6 +278,7 @@ def extract_pdf_docling(
     output_dir: str = None,
     images_scale: float = 4.0,
     show_progress: bool = False,
+    use_ocr: bool = False,
 ) -> tuple:
     """
     Extract PDF using Docling with accurate tables + high-res images.
@@ -288,9 +291,18 @@ def extract_pdf_docling(
         output_dir: Directory to save extracted images (None = skip images)
         images_scale: Image resolution multiplier (default: 4.0 for high-res)
         show_progress: Whether to show progress output
+        use_ocr: Run docling's OCR stage (off by default, see below)
 
     Returns:
         tuple: (markdown: str, image_paths: list[str])
+
+    Note on use_ocr: docling defaults do_ocr to True and picks an engine
+    automatically, which on a standard install is RapidOCR on onnxruntime.
+    That puts onnxruntime and the PyTorch layout model in one process, and on
+    macOS the two OpenMP runtimes they each carry can collide hard enough to
+    segfault the interpreter. Leaving OCR off avoids loading onnxruntime at
+    all, costs nothing on PDFs that already have a text layer, and matches
+    fast mode, where OCR is opt-in for speed.
     """
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.base_models import InputFormat
@@ -313,6 +325,7 @@ def extract_pdf_docling(
     # Configure pipeline for accurate tables + image extraction
     pipeline_options = PdfPipelineOptions(
         do_table_structure=True,
+        do_ocr=use_ocr,
         generate_picture_images=output_dir is not None,
         images_scale=images_scale,
     )

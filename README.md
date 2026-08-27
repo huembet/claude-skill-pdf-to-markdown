@@ -49,7 +49,7 @@ raising the pins.
 | Option | Description |
 |--------|-------------|
 | `--docling` | Use Docling AI for high-accuracy tables |
-| `--ocr` | OCR pages with little extractable text (fast mode, much slower) |
+| `--ocr` | Run OCR for pages with little extractable text (both modes, much slower) |
 | `--no-progress` | Disable progress indicator |
 | `--clear-cache` | Clear cache for this PDF and re-extract |
 | `--clear-all-cache` | Clear entire cache |

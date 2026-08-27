@@ -228,7 +228,7 @@ Usage: pdf_to_md.py <input.pdf> [output.md] [options]
 
 Options:
   --docling         Use Docling AI for high-accuracy tables (~1 sec/page)
-  --ocr             OCR pages with little extractable text (fast mode, slower)
+  --ocr             Run OCR for pages with little extractable text (both modes, slower)
   --no-progress     Disable progress indicator
 
 Cache Options:
@@ -256,6 +256,7 @@ For PDFs with complex tables that need high accuracy, use the `--docling` flag:
 - ~1 second per page (vs instant for fast mode)
 - First run downloads AI models (~500MB one-time)
 - Higher-resolution images (4x default)
+- OCR is off unless `--ocr` is given, same as fast mode
 
 **Note:** `--accurate` is an alias for `--docling`.
 
@@ -279,6 +280,24 @@ Re-run with `--ocr`:
 ~/.claude/skills/pdf-to-markdown/.venv/bin/python ~/.claude/skills/pdf-to-markdown/scripts/pdf_to_md.py document.pdf --ocr
 ```
 The script warns on stderr when output looks like it needed OCR.
+
+### `--docling` dies with no Python error (exit -11 / signal 11)
+
+A segfault, not an exception. Docling loads a PyTorch layout model, and with
+OCR enabled it also loads onnxruntime through RapidOCR. Each carries its own
+OpenMP runtime, and on macOS the two can collide hard enough to kill the
+interpreter. OCR is off by default for this reason, so first make sure `--ocr`
+is not in play. If it crashes even without OCR, the collision is between other
+components; these help:
+
+```bash
+export OMP_NUM_THREADS=1
+export KMP_DUPLICATE_LIB_OK=TRUE
+```
+
+To identify the faulting library, open the newest report in
+`~/Library/Logs/DiagnosticReports/` and look at the frame at the top of the
+crashing thread.
 
 ### `--docling` fails with a network error
 Docling downloads its models from Hugging Face on first use. Behind a proxy or

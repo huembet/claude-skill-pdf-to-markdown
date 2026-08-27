@@ -13,7 +13,7 @@ Features:
 Usage:
     python pdf_to_md.py <input.pdf> [output.md]
     python pdf_to_md.py <input.pdf> --docling      # Accurate tables (slower)
-    python pdf_to_md.py <input.pdf> --ocr          # OCR scanned pages (slower)
+    python pdf_to_md.py <input.pdf> --ocr          # OCR scanned pages (either mode)
     python pdf_to_md.py <input.pdf> --clear-cache  # Re-extract
     python pdf_to_md.py --clear-all-cache          # Clear entire cache
 
@@ -101,9 +101,8 @@ class CacheManager:
     @staticmethod
     def _mode(config: ExtractionConfig) -> str:
         """Mode string for cache keys and metadata; OCR changes the output."""
-        if config.docling:
-            return f"docling_{config.images_scale}"
-        return "fast_ocr" if config.ocr else "fast"
+        base = f"docling_{config.images_scale}" if config.docling else "fast"
+        return f"{base}_ocr" if config.ocr else base
 
     def _get_dir(self, cache_key: str) -> Path:
         """Get cache directory for a given cache key."""
@@ -289,7 +288,8 @@ class CacheManager:
             variants = [
                 ExtractionConfig(pdf_path=pdf_path, docling=False, ocr=False),
                 ExtractionConfig(pdf_path=pdf_path, docling=False, ocr=True),
-                ExtractionConfig(pdf_path=pdf_path, docling=True),
+                ExtractionConfig(pdf_path=pdf_path, docling=True, ocr=False),
+                ExtractionConfig(pdf_path=pdf_path, docling=True, ocr=True),
             ]
             for config in variants:
                 try:
@@ -577,6 +577,7 @@ def convert_pdf(
             output_dir=image_dir,
             images_scale=images_scale,
             show_progress=show_progress,
+            use_ocr=use_ocr,
         )
         return markdown
     else:
@@ -651,7 +652,7 @@ Caching:
     parser.add_argument(
         "--ocr",
         action="store_true",
-        help="OCR pages with little extractable text (fast mode only, much slower)",
+        help="Run OCR for pages with little extractable text (both modes, much slower)",
     )
     parser.add_argument("--no-progress", action="store_true", help="Disable progress indicator")
 
