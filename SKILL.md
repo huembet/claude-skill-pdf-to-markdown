@@ -47,10 +47,18 @@ importable, `to_markdown()` routes through a **second implementation** with a
 different parameter set and different page metadata. The switch is silent:
 unsupported arguments land in `**kwargs` and are dropped without a warning.
 
-**After a version bump**, re-check on a known PDF:
-- output still carries one `<!-- Page N -->` per page, numbered without gaps
-- images still land in `images/` next to the `.md`, and every reference resolves
-- runtime has not jumped by several multiples (that signals OCR turned itself on)
+**After a version bump**, re-check against a known PDF with the bundled script:
+
+```bash
+~/.claude/skills/pdf-to-markdown/.venv/bin/python \
+    ~/.claude/skills/pdf-to-markdown/scripts/verify.py known-document.pdf
+```
+
+It prints the installed versions, then asserts what the skill promises: one
+`<!-- Page N -->` per page numbered without gaps, image references that resolve,
+no images loose beside the PDF, and a cached re-run with identical content. Fast
+mode always runs; `--docling` mode runs too when docling is installed, and
+`--ocr` adds that variant. Exit code is 0 only if every mode passes.
 
 ### Verify Installation
 ```bash
@@ -213,6 +221,7 @@ Regular paragraph text with **bold**, *italic*, and `code` formatting.
 ## Script Reference
 
 Location: `~/.claude/skills/pdf-to-markdown/scripts/pdf_to_md.py`
+Checks:   `~/.claude/skills/pdf-to-markdown/scripts/verify.py` (see "After a version bump")
 
 ```
 Usage: pdf_to_md.py <input.pdf> [output.md] [options]

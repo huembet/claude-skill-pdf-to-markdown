@@ -1,4 +1,13 @@
 # High-accuracy mode (--docling). Install in addition to requirements.txt.
 # First use downloads ~500MB of models from Hugging Face.
+#
+# Provisional: these are the versions verified in the development container,
+# where docling's models cannot be downloaded (huggingface.co is blocked there),
+# so only the code paths were exercised, not a full conversion. Replace with the
+# pair that `scripts/verify.py` reports from a machine where --docling passes.
+#
+# Lower bound that actually matters: docling-core 2.26.0. Below that,
+# export_to_markdown() has neither page_break_placeholder (2.24.0) nor page_no
+# (2.26.0), and the output silently loses its page markers.
 docling==2.123.0
 docling-core==2.92.0

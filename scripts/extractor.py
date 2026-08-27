@@ -4,6 +4,7 @@ PDF extraction with multiple backends:
 - Accurate mode: IBM Docling with TableFormer AI (better for complex/borderless tables)
 """
 
+import inspect
 import os
 import re
 import sys
@@ -201,38 +202,73 @@ def _mark_pages(segments: list) -> str:
     )
 
 
+def _docling_export_support(document) -> set:
+    """
+    Which page-aware export parameters the installed docling-core offers.
+
+    page_break_placeholder arrived in docling-core 2.24.0 and page_no in 2.26.0,
+    and docling does not pin docling-core tightly - an older core can sit under a
+    current docling, where either argument raises TypeError. Inspecting the
+    signature keeps a genuine export failure from being read as a missing
+    feature, which a bare `except TypeError` around the call would do.
+    """
+    try:
+        parameters = inspect.signature(document.export_to_markdown).parameters
+    except (TypeError, ValueError):
+        return set()
+    return {
+        name for name in ("page_break_placeholder", "page_no") if name in parameters
+    }
+
+
 def _docling_to_markdown(document, image_mode) -> str:
     """
     Export a DoclingDocument to markdown carrying <!-- Page N --> markers.
 
     Preferred route is a single whole-document export with a page-break
     placeholder. Docling's per-page export is documented to duplicate tables in
-    larger documents, so it is only used as a fallback when the placeholder
-    route yields a segment count that disagrees with the page count.
+    larger documents, so it only serves as a fallback - either when the
+    placeholder route yields a segment count that disagrees with the page count,
+    or when the installed docling-core is too old to offer the placeholder.
     """
+    supported = _docling_export_support(document)
     total_pages = document.num_pages()
 
-    markdown = document.export_to_markdown(
-        image_mode=image_mode,
-        page_break_placeholder=_DOCLING_PAGE_BREAK,
-    )
-    segments = markdown.split(_DOCLING_PAGE_BREAK)
+    if "page_break_placeholder" in supported:
+        markdown = document.export_to_markdown(
+            image_mode=image_mode,
+            page_break_placeholder=_DOCLING_PAGE_BREAK,
+        )
+        segments = markdown.split(_DOCLING_PAGE_BREAK)
 
-    if not total_pages or len(segments) == total_pages:
-        return _mark_pages(segments)
+        if not total_pages or len(segments) == total_pages:
+            return _mark_pages(segments)
 
-    # Segment count disagrees with the page count - numbering them 1..n would
-    # attach wrong page numbers, so ask docling for each page explicitly.
+        # Numbering these 1..n would put wrong page numbers on real content -
+        # an empty page yields one break too few - so ask page by page instead.
+        print(
+            f"WARNING: {len(segments)} page-break segments for {total_pages} pages; "
+            "falling back to per-page export.",
+            file=sys.stderr,
+        )
+
+    if "page_no" in supported and total_pages:
+        return _mark_pages(
+            [
+                document.export_to_markdown(page_no=number, image_mode=image_mode)
+                for number in range(1, total_pages + 1)
+            ]
+        )
+
+    # Wrong page numbers would be worse than none, so degrade to an unmarked
+    # export and say exactly what would fix it.
     print(
-        f"WARNING: {len(segments)} page-break segments for {total_pages} pages; "
-        "falling back to per-page export.",
+        "WARNING: this docling-core exposes neither page_break_placeholder nor "
+        "page_no, so the output carries no page markers. Upgrade with "
+        "'uv pip install -U docling-core' (needs >= 2.26.0).",
         file=sys.stderr,
     )
-    per_page = [
-        document.export_to_markdown(page_no=number, image_mode=image_mode)
-        for number in range(1, total_pages + 1)
-    ]
-    return _mark_pages(per_page)
+    return document.export_to_markdown(image_mode=image_mode)
 
 
 def extract_pdf_docling(

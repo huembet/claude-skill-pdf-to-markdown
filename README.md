@@ -61,9 +61,22 @@ raising the pins.
 scripts/
   pdf_to_md.py              # Main CLI tool
   extractor.py              # PDF extraction library (fast + accurate modes)
+  verify.py                 # Acceptance checks against a real PDF
 requirements.txt            # Fast mode, pinned
 requirements-docling.txt    # Additional pins for --docling
 ```
+
+## Verifying a change
+
+```bash
+.venv/bin/python scripts/verify.py known-document.pdf
+```
+
+Prints the installed versions, then checks each available mode: page markers
+numbered without gaps, image references that resolve, no images loose beside the
+PDF, and a cached re-run with identical content. Exits non-zero if any mode
+fails. Run it after changing extraction or raising a pin — particularly for
+`--docling`, whose models only download where `huggingface.co` is reachable.
 
 ## Cache
 
