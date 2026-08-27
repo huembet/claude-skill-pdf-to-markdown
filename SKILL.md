@@ -257,6 +257,11 @@ For PDFs with complex tables that need high accuracy, use the `--docling` flag:
 - First run downloads AI models (~500MB one-time)
 - Higher-resolution images (4x default)
 - OCR is off unless `--ocr` is given, same as fast mode
+- Usually finds fewer images than fast mode: docling extracts what its model
+  classifies as a picture, while fast mode captures every picture or formula
+  region its layout pass marks. On a 15-page journal article that was 3 images
+  against 7. Neither count is wrong; use fast mode if you want every figure
+  fragment, `--docling` if you want the tables right.
 
 **Note:** `--accurate` is an alias for `--docling`.
 
