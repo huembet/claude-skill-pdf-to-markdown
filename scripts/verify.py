@@ -166,7 +166,7 @@ def check_cache(cold_body, warm_body, warm_stderr):
 
 def verify_mode(pdf_source, label, extra_args):
     """Run one mode end to end in its own directory. Returns True if all checks pass."""
-    print(f"\n{label}")
+    print(f"\n{label}", flush=True)
 
     with tempfile.TemporaryDirectory(prefix="pdf_verify_") as workspace:
         output_dir = Path(workspace)
@@ -177,6 +177,17 @@ def verify_mode(pdf_source, label, extra_args):
         from extractor import get_page_count
 
         expected_pages = get_page_count(str(pdf_path))
+
+        # The conversion's own progress goes to stderr, which run_cli captures
+        # so it can be reported on failure. Say what is happening first -
+        # otherwise a docling run that is downloading half a gigabyte of models
+        # looks indistinguishable from a hang.
+        notice = f"  ... converting {expected_pages} pages"
+        if "--docling" in extra_args:
+            notice += " (~1s/page; a first docling run also fetches ~500MB of models)"
+        elif "--ocr" in extra_args:
+            notice += " (OCR is several times slower than the default)"
+        print(notice, flush=True)
 
         # --clear-cache drops any cache entry and then converts, so this one
         # run is the cold run - no need to pay for extraction twice.
